@@ -211,7 +211,9 @@ Cache-Control：指定响应的缓存策略。
     * 从任务队列中取出一个任务通过process函数进行处理
     * `报文解析`：process函数中会调用process_read函数，通过主、从状态机对请求报文进行解析，process_read函数中会调用do_request函数生成响应报文。
     * `报文响应`：process函数中会调用process_write将响应报文返回给浏览器端
-
+<p align="center">
+<img src="img/5.png" style="zoom:90%"/>
+</p>
 ***
 ***
 <span style="color: yellow;font-size: 18px;">http类的实现见[此处](../Code/http/http_conn.h)，使用http类接受http请求的代码见main.c</span>
@@ -251,7 +253,7 @@ enum LINE_STATUS
 从状态机也有三种状态，表示读这行的读取状态
 * LINE_OK，完整地读取了一行（以换行符标志）
 * LINE_BAD，读到的报文语法有错，读取失败
-* LINE_OPEN，读取的行不完整，说明读到了最后一行
+* LINE_OPEN，读取的行不完整，说明读到了最后一行（最后一行没有\r\n）
 
 从请求报文的第一行开始，从状态机读取请求报文的第一行，如果读取成功达到LINE_OK状态主状态机才会达到CHECK_STATE_REQUESTLINE状态，然后调用parse_request_line函数解析请求行，然后对于从状态机成功读取的每一行如果返回LINE_OK状态都说明读入了请求报文的请求头部，只有返回LINE_OPEN状态才说明读到了请求报文的请求内容，读取并解析成功后跳转do_request函数生成响应报文。
 

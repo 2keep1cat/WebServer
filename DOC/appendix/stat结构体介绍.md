@@ -18,7 +18,7 @@ int lstat(const char *path,struct stat *struct_stat);
 * 第一个参数是文件的路径
 * 第二个参数是struct stat的指针。
 #### 返回值
-* 成功返回0
+* 成功返回0，并将文件属性传入struct_stat结构体对象
 * 失败返回-1，且error被自动设置为下面的值：
 
         EBADF： 文件描述词无效
@@ -53,7 +53,7 @@ int fstat(int fdp, struct stat *struct_stat);　　//通过文件描述符获取
 ```c
 struct stat {
         mode_t     st_mode;       //文件对应的模式，文件，目录等
-        ino_t      st_ino;       //inode节点号
+        ino_t      st_ino;        //inode节点号
         dev_t      st_dev;        //设备号码
         dev_t      st_rdev;       //特殊设备号码
         nlink_t    st_nlink;      //文件的连接数
@@ -63,7 +63,7 @@ struct stat {
         time_t     st_atime;      //文件最后被访问的时间
         time_t     st_mtime;      //文件内容最后被修改的时间
         time_t     st_ctime;      //文件状态改变时间
-        blksize_t st_blksize;    //文件内容对应的块大小
+        blksize_t st_blksize;     //文件内容对应的块大小
         blkcnt_t   st_blocks;     //伟建内容对应的块数量
       };
 ```

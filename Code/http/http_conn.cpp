@@ -88,14 +88,18 @@ http_conn::HTTP_CODE http_conn::process_read(){//--通过while循环，将主从
     HTTP_CODE ret = NO_REQUEST;//------------------初始化HTTP请求解析结果
     char *text = 0;//------------------------------定义text指针变量用于存储读取的字符
 
-    /*当主状态机的状态为解析请求报文的正文内容&&从状态机成功读取了一行，或者从状态机成功读取了一行
-    说明：判断条件中用||隔开的两个条件，如果第一个满足了就不会执行第二个*/
+    /*说明：判断条件中用||隔开的两个条件，如果第一个满足了就不会执行第二个
+    除了请求内容（请求正文）的末尾没有\r\n，其它每行都有，而GET请求报文没有请求内容，所以对报文进行拆解时，仅用从状态机的状态line_status=parse_line())==LINE_OK语句即可
+    但在POST请求报文中，请求内容的末尾没有任何字符，用parse_line()函数会返回LINE_OPEN，如果继续用该条件判断是否进入循环就会丢弃最后一行的请求内容，
+    这里转而使用主状态机的状态m_check_state作为循环入口条件，不过解析完请求正文后m_check_state还是CHECK_STATE_CONTENT，为了防止再次进入循环，
+    增加line_status == LINE_OK判断，在完成请求内容解析后，line_status==LINE_OPEN，从而跳出循环。
+    */
     while ((m_check_state == CHECK_STATE_CONTENT && line_status == LINE_OK) || ((line_status = parse_line()) == LINE_OK)){
         
         text = get_line();//-----------------------用get_line函数返回要读取的位置的行首
         m_start_line = m_checked_idx;//------------m_start_line是每一个数据行在m_read_buf中的起始位置
         //-----------------------------------------m_checked_idx表示从状态机在m_read_buf中读取的位置
-        //LOG_INFO("%s", text);//暂时注释掉，因为还没写log
+        //LOG_INFO("%s", text);//------------------暂时注释掉，因为还没写log
         //Log::get_instance()->flush();
         switch (m_check_state)//-------------------主状态机的三种状态转移逻辑
         {
@@ -184,16 +188,62 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char *text){
     m_check_state = CHECK_STATE_HEADER;//--------把主状态机的状态改为解析请求头部
     return NO_REQUEST;//-------------------------返回请求不完整，表示还要继续读入请求报文
 }
-http_conn::HTTP_CODE http_conn::parse_headers(char *text){//解析http请求的一个头部信息
-
+/*解析完请求行后，主状态机继续分析请求头和空行。
+通过判断当前的text首位是不是\0字符，若是，则当前处理的是空行，若不是，则当前处理的是请求头*/
+http_conn::HTTP_CODE http_conn::parse_headers(char *text){
+    if (text[0] == '\0')//------------------------如果第一个字符是\0就是空行，如果有content_length就已经读过了
+    {
+        if (m_content_length != 0)//--------------如果content_length不为0就说明是post请求
+        {
+            m_check_state = CHECK_STATE_CONTENT;//可以去解析请求正文了
+            return NO_REQUEST;//------------------请求不完整，需要继续解析
+        }
+        return GET_REQUEST;//---------------------如果是GET请求就说明解析完了，返回GET_REQUEST
+    }
+    else if (strncasecmp(text, "Connection:", 11) == 0)
+    {                   //------------------------如果text的前11个字符是"Connection:"
+        text += 11;//-----------------------------text向后移11位
+        text += strspn(text, " \t");//------------将text跳过空格或者制表符
+        if (strcasecmp(text, "keep-alive") == 0)//如果Connection:后面是keep-alive
+        {
+            m_linger = true;//--------------------是长连接，则将linger标志设置为true
+        }
+    }
+    else if (strncasecmp(text, "Content-length:", 15) == 0)
+    {                       //--------------------如果text的前15个字符是"Content-length:"
+        text += 15;//-----------------------------text向后移15位
+        text += strspn(text, " \t");//------------将text跳过空格或者制表符
+        m_content_length = atol(text);//----------将数字字符串转换为长整型数字，记录下content_length
+    }
+    else if (strncasecmp(text, "Host:", 5) == 0)
+    {               //----------------------------如果text的前5个字符是"Host:"
+        text += 5;//------------------------------text向后移5位
+        text += strspn(text, " \t");//------------将text跳过空格或者制表符
+        m_host = text;//--------------------------记录下host，目标服务器的主机名或IP地址
+    }
+    else//----------------------------------------其它的请求头部则不管
+    {
+        printf("oop!unknow header: %s\n",text);
+        //LOG_INFO("oop!unknow header: %s", text);
+        //Log::get_instance()->flush();
+    }
+    return NO_REQUEST;//--------------------------如果未正常到尾部则返回请求不完整，需要继续解析
 }
-http_conn::HTTP_CODE http_conn::parse_content(char *text){//判断http请求是否被完整读入
-
+/*用于解析请求内容*/
+http_conn::HTTP_CODE http_conn::parse_content(char *text){
+    if (m_read_idx >= (m_content_length + m_checked_idx))//-m_read_idx为读缓冲区m_read_buf末尾的下一个位置，判断buffer中是否读取了消息体
+    {                                                    //-正常情况下此时的m_checked_idx指向请求内容的第一个字符，如果判断为真，即buffer中读取了请求内容
+        text[m_content_length] = '\0';//--------------------将请求内容尾部的后一个字符修改为\0，用于截断
+        //--------------------------------------------------POST请求中最后为输入的用户名和密码
+        m_string = text;//----------------------------------将请求内容赋值给m_string
+        return GET_REQUEST;//-------------------------------获得了完整的请求
+    }
+    return NO_REQUEST;//------------------------------------如果buffer中没有完整读取请求内容，返回请求报文不完整
 }
 http_conn::HTTP_CODE http_conn::do_request(){//生成响应报文
 
 }
-/*从状态机，用于把'\r\n'换成'\0\0'，返回值为行的读取状态，有LINE_OK,LINE_BAD,LINE_OPEN*/
+/*从状态机，用于读取一行并把'\r\n'换成'\0\0'，返回值为行的读取状态，有LINE_OK,LINE_BAD,LINE_OPEN*/
 http_conn::LINE_STATUS http_conn::parse_line(){
     char temp;
     for (; m_checked_idx < m_read_idx; ++m_checked_idx)//----m_read_idx指向缓冲区m_read_buf的数据末尾的下一个字节
