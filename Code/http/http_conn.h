@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 
 #include "../lock/lock.h"
 #include "../mysql/sql_connection_pool.h"
@@ -125,7 +126,7 @@ private:
     struct iovec m_iv[2]; //---------------io向量机制iovec
     int m_iv_count;
     int cgi; //----------------------------是否启用POST
-    char *m_string; //---------------------存储请求的头数据
+    char *m_string; //---------------------存储请求内容
     int bytes_to_send; //------------------未发送的字节数
     int bytes_have_send; //----------------已发送的字节数
 };

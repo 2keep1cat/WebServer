@@ -1,10 +1,18 @@
 #include "http_conn.h"
+#include <map>
+
 
 //#define connfdET //边缘触发非阻塞
 #define connfdLT //水平触发阻塞
 
 //#define listenfdET //边缘触发非阻塞
 #define listenfdLT //水平触发阻塞
+
+//网站根目录，文件夹内存放请求的资源和跳转的html文件，当浏览器出现连接重置时，可能是网站根目录出错或http响应格式出错或者访问的文件中内容完全为空
+const char *doc_root = "/home/zhuwenjie/WebServer/resource";
+//将表中的用户名和密码放入map
+map<string, string> users;
+locker m_lock;
 
 /*epoll相关的函数*/
 int setnonblocking(int fd){//--------------------对文件描述符设置非阻塞
@@ -240,8 +248,132 @@ http_conn::HTTP_CODE http_conn::parse_content(char *text){
     }
     return NO_REQUEST;//------------------------------------如果buffer中没有完整读取请求内容，返回请求报文不完整
 }
-http_conn::HTTP_CODE http_conn::do_request(){//生成响应报文
+/*生成响应报文,该函数将网站根目录和url文件拼接，然后通过stat判断该文件属性
+浏览器网址栏中的字符，即url，可以将其抽象成ip:port/xxx，xxx通过html文件的action属性进行设置
+m_url为请求报文中解析出的请求资源，也就是/xxx，有8种情况*/
+http_conn::HTTP_CODE http_conn::do_request(){
+    strcpy(m_real_file, doc_root);//----------------------------m_real_file是用来存储要读取文件的名称的，先将网站根目录赋值给它
+    int len = strlen(doc_root);//-------------------------------len为根目录的字符个数
+    //printf("m_url:%s\n", m_url);
+    const char *p = strrchr(m_url, '/'); //---------------------找到m_url中/的位置，strrchr()函数用于在给定字符串中查找指定字符的最后一个匹配位置
 
+    /*如果启用POST && '/'的下一个字符是'2'或'3'，对应的是/2CGISQL.cgi（登录校验）和/3CGISQL.cgi（注册校验）*/
+    if (cgi == 1 && (*(p + 1) == '2' || *(p + 1) == '3'))
+    {
+        char flag = m_url[1];//---------------------------------flag存储'/'的下一个字符即'2'或'3'，判断是登录检测还是注册检测
+                                
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);//新建一个字符串用于存储去掉数字后的m_url
+        strcpy(m_url_real, "/");//------------------------------让m_url_real等于"/"
+        strcat(m_url_real, m_url + 2);//------------------------将m_url_real接上m_url的第三个字符开始的后面所有字符
+        strncpy(m_real_file + len, m_url_real, FILENAME_LEN - len - 1);
+                                        //----------------------将m_url_real的 FILENAME_LEN-len-1个字符复制给m_real_file的第len+1个位置，
+                                        //----------------------使得m_real_file字符由网站根目录和m_url_real组成
+        free(m_url_real);//-------------------------------------释放m_url_real的内存空间，m_url_real的任务完成了
+
+        /*将用户名和密码提取出来，user=123&passwd=123*/
+        char name[100], password[100];//------------------------用于存储用户名和密码
+        int i;
+        for (i = 5; m_string[i] != '&'; ++i)//------------------m_string存储了请求内容
+            name[i - 5] = m_string[i];//------------------------将第6个字符开始到'&'之前的字符赋值给name
+        name[i - 5] = '\0';//-----------------------------------并在name末尾加\0结束
+
+        int j = 0;
+        for (i = i + 10; m_string[i] != '\0'; ++i, ++j)//-------将'&'字符后第10位开始到结束符
+            password[j] = m_string[i];//------------------------之间的字符赋值给password
+        password[j] = '\0';//-----------------------------------并在password末尾加\0结束
+
+        //同步线程登录校验
+        if (*(p + 1) == '3')//如果是注册，先检测数据库中是否有重名的
+        {
+            //没有重名的，进行增加数据
+            char *sql_insert = (char *)malloc(sizeof(char) * 200);
+            strcpy(sql_insert, "INSERT INTO user(username, passwd) VALUES(");
+            strcat(sql_insert, "'");
+            strcat(sql_insert, name);
+            strcat(sql_insert, "', '");
+            strcat(sql_insert, password);
+            strcat(sql_insert, "')");
+
+            if (users.find(name) == users.end())
+            {
+
+                m_lock.lock();
+                int res = mysql_query(mysql, sql_insert);
+                users.insert(pair<string, string>(name, password));
+                m_lock.unlock();
+
+                if (!res)
+                    strcpy(m_url, "/log.html");
+                else
+                    strcpy(m_url, "/registerError.html");
+            }
+            else
+                strcpy(m_url, "/registerError.html");
+        }
+        //如果是登录，直接判断
+        //若浏览器端输入的用户名和密码在表中可以查找到，返回1，否则返回0
+        else if (*(p + 1) == '2')
+        {
+            if (users.find(name) != users.end() && users[name] == password)
+                strcpy(m_url, "/welcome.html");
+            else
+                strcpy(m_url, "/logError.html");
+        }
+    }
+
+    if (*(p + 1) == '0')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/register.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else if (*(p + 1) == '1')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/log.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else if (*(p + 1) == '5')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/picture.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else if (*(p + 1) == '6')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/video.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else if (*(p + 1) == '7')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/fans.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else
+        strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
+
+    if (stat(m_real_file, &m_file_stat) < 0)
+        return NO_RESOURCE;
+    if (!(m_file_stat.st_mode & S_IROTH))
+        return FORBIDDEN_REQUEST;
+    if (S_ISDIR(m_file_stat.st_mode))
+        return BAD_REQUEST;
+    int fd = open(m_real_file, O_RDONLY);
+    m_file_address = (char *)mmap(0, m_file_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    return FILE_REQUEST;
 }
 /*从状态机，用于读取一行并把'\r\n'换成'\0\0'，返回值为行的读取状态，有LINE_OK,LINE_BAD,LINE_OPEN*/
 http_conn::LINE_STATUS http_conn::parse_line(){

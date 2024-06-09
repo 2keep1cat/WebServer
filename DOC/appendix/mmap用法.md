@@ -3,6 +3,8 @@
 用于将一个文件或其他对象映射到内存，提高文件的访问速度。
 ### 用法
 ```c
+#include <sys/mman.h>
+
 void* mmap(void* start,size_t length,int prot,int flags,int fd,off_t offset);
 
 int munmap(void* start,size_t length);

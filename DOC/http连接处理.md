@@ -257,3 +257,50 @@ enum LINE_STATUS
 
 从请求报文的第一行开始，从状态机读取请求报文的第一行，如果读取成功达到LINE_OK状态主状态机才会达到CHECK_STATE_REQUESTLINE状态，然后调用parse_request_line函数解析请求行，然后对于从状态机成功读取的每一行如果返回LINE_OK状态都说明读入了请求报文的请求头部，只有返回LINE_OPEN状态才说明读到了请求报文的请求内容，读取并解析成功后跳转do_request函数生成响应报文。
 
+## 响应报文生成
+### url介绍
+url即浏览器网址栏中的字符，可以将其抽象成ip:port/xxx，xxx通过html文件的action属性进行设置。
+
+在http类中m_url表示请求报文中解析出的请求资源，也就是url中的/xxx，本项目中解析后的m_url设置了8种情况。
+```
+/
+
+GET请求，跳转到judge.html，即欢迎访问页面
+
+/0
+
+POST请求，跳转到register.html，即注册页面
+
+/1
+
+POST请求，跳转到log.html，即登录页面
+
+/2CGISQL.cgi
+
+POST请求，进行登录校验
+
+验证成功跳转到welcome.html，即资源请求成功页面
+
+验证失败跳转到logError.html，即登录失败页面
+
+/3CGISQL.cgi
+
+POST请求，进行注册校验
+
+注册成功跳转到log.html，即登录页面
+
+注册失败跳转到registerError.html，即注册失败页面
+
+/5
+
+POST请求，跳转到picture.html，即图片请求页面
+
+/6
+
+POST请求，跳转到video.html，即视频请求页面
+
+/7
+
+POST请求，跳转到fans.html，即关注页面
+```
+### do_request函数
