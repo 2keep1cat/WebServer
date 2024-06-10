@@ -178,7 +178,7 @@ HTTP 请求报文是客户端向服务器发送的数据格式，用于请求特
 10 </html>
 ```
 响应报文通常遵循HTTP（Hypertext Transfer Protocol）协议的规范，根据请求的类型和服务器的处理结果，包含以下重要的组成部分：
-* `状态行（Status Line）`：由HTTP协议版本号， 状态码， 状态消息 三部分组成，HTTP有5种类型的状态码：
+* `状态行（Status Line）`：由HTTP协议版本号， 状态码， 状态描述 三部分组成，HTTP有5种类型的状态码：
 
     * 1xx：指示信息--表示请求已接收，继续处理。
     * 2xx：成功--表示请求正常处理完毕。
@@ -209,8 +209,10 @@ Cache-Control：指定响应的缓存策略。
     * 将该http对象插入任务队列
 * 工作线程（子线程）
     * 从任务队列中取出一个任务通过process函数进行处理
-    * `报文解析`：process函数中会调用process_read函数，通过主、从状态机对请求报文进行解析，process_read函数中会调用do_request函数生成响应报文。
-    * `报文响应`：process函数中会调用process_write将响应报文返回给浏览器端
+    * `报文解析`：process函数中会调用process_read函数，通过主、从状态机对请求报文进行解析，process_read函数中会调用do_request函数为不同的请求准备不同的响应页面。
+    * `报文响应`：process函数中会调用process_write将响应报文写到写缓冲区
+* 主线程
+    * 主线程监测写事件，并调用write函数将响应报文发送给浏览器端
 <p align="center">
 <img src="img/5.png" style="zoom:90%"/>
 </p>
@@ -304,3 +306,8 @@ POST请求，跳转到video.html，即视频请求页面
 POST请求，跳转到fans.html，即关注页面
 ```
 ### do_request函数
+* 先根据m_url是以/0 /1 /2 /3 /5 /6 /7中的哪一个开头的，设置m_url = "/xxx.html"
+* 再设置m_real_file = 网站根目录 + "/xxx.html"用于跳转页面
+* 根据m_real_file的结果将对应文件映射到内存
+
+需要注意的是：如果m_url是/ ，没有后续数字，在parse_request_line()函数中就已经设置好等于"judge.html"
