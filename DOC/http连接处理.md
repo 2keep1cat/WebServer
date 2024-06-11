@@ -311,3 +311,5 @@ POST请求，跳转到fans.html，即关注页面
 * 根据m_real_file的结果将对应文件映射到内存
 
 需要注意的是：如果m_url是/ ，没有后续数字，在parse_request_line()函数中就已经设置好等于"judge.html"
+
+[--->下一篇](./定时器.md)

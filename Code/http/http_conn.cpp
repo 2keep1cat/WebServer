@@ -1,5 +1,8 @@
 #include "http_conn.h"
+//#include "../log/log.h"
 #include <map>
+#include <mysql/mysql.h>
+#include <fstream>
 
 
 //#define connfdET //-------边缘触发非阻塞
@@ -26,13 +29,17 @@ map<string, string> users;//将表中的用户名和密码放入map，#考虑一
 locker m_lock;//------------插入新用户时用于保护users的锁
 
 /*epoll相关的函数*/
-int setnonblocking(int fd){//--------------------对文件描述符设置非阻塞
+
+/*对文件描述符设置非阻塞*/
+int setnonblocking(int fd){
     int old_option = fcntl(fd, F_GETFL);//-------先用fcntl获取文件描述符fd的文件状态标志
     int new_option = old_option | O_NONBLOCK;//--将获取到的文件状态标志位或上非阻塞
     fcntl(fd, F_SETFL, new_option);//------------再将新的文件状态标志位用fcntl设置到文件描述符fd中
     return old_option;//-------------------------返回旧的文件状态标志位
 }
-void addfd(int epollfd, int fd, bool one_shot){//将内核事件表注册读事件，ET模式，选择开启EPOLLONESHOT
+
+/*将内核事件表注册读事件，ET模式，选择开启EPOLLONESHOT*/
+void addfd(int epollfd, int fd, bool one_shot){
     epoll_event event;//-------------------------定义epoll_event类型变量event，作为传入epoll_ctl函数的事件
     event.data.fd = fd;//------------------------将fd赋给event事件
 #ifdef connfdET//--------------------------------如果使用ET触发模式，将监听事件注册为读事件，ET模式，对方关闭连接
@@ -52,11 +59,15 @@ void addfd(int epollfd, int fd, bool one_shot){//将内核事件表注册读事�
     epoll_ctl(epollfd,EPOLL_CTL_ADD,fd,&event);//用epoll_ctl函数将epoll实例中添加fd，添加的事件为上面设置好的event
     setnonblocking(fd);//------------------------设置文件描述符非阻塞
 }
-void removefd(int epollfd, int fd){//------------从内核事件表删除文件描述符
+
+/*从内核事件表删除文件描述符*/
+void removefd(int epollfd, int fd){
     epoll_ctl(epollfd,EPOLL_CTL_DEL,fd,0);
     close(fd);
 }
-void modfd(int epollfd, int fd, int ev){//-------修改监听事件为ev，并将事件重置为EPOLLONESHOT
+
+/*修改监听事件为ev，并将事件重置为EPOLLONESHOT*/
+void modfd(int epollfd, int fd, int ev){
     epoll_event event;//-------------------------定义epoll_event类型变量event，作为传入epoll_ctl函数的事件
     event.data.fd = fd;//------------------------将fd赋给event事件
 #ifdef connfdET//--------------------------------如果使用ET触发模式，ev+ET+oneshot+rdhup
@@ -69,13 +80,31 @@ void modfd(int epollfd, int fd, int ev){//-------修改监听事件为ev，并�
 }
 
 /*类中的函数*/
+
 /*public中的函数*/
-void http_conn::init(int sockfd, const sockaddr_in &addr){//初始化连接,外部调用初始化套接字地址
 
+/*初始化连接,外部调用初始化套接字地址*/
+void http_conn::init(int sockfd, const sockaddr_in &addr){
+    m_sockfd = sockfd;
+    m_address = addr;
+    //int reuse=1;
+    //setsockopt(m_sockfd,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse));
+    addfd(m_epollfd, sockfd, true);
+    m_user_count++;
+    init();
 }
-void http_conn::close_conn(bool real_close){//关闭连接，关闭一个连接，客户总量减一
 
+/*关闭连接，关闭一个连接，客户总量减一*/
+void http_conn::close_conn(bool real_close){
+    if (real_close && (m_sockfd != -1))
+    {
+        removefd(m_epollfd, m_sockfd);
+        m_sockfd = -1;
+        m_user_count--;
+    }
 }
+
+/*工作线程调用来处理请求报文并向写缓冲区中写入响应报文*/
 void http_conn::process(){
     HTTP_CODE read_ret = process_read();//-----调用process_read函数对报文进行解析，并返回HTTP_CODE型的变量用于接收解析结果
     if(read_ret == NO_REQUEST){//--------------如果解析结果是无请求，那么就监听一次它的读事件（为了等待下一次读取客户端数据的机会）
@@ -88,74 +117,165 @@ void http_conn::process(){
     }
     modfd(m_epollfd,m_sockfd,EPOLLOUT); //-----监听一次它的写事件
 }
-bool http_conn::read_once(){//循环读取客户数据，直到无数据可读或对方关闭连接,非阻塞ET工作模式下，需要一次性将数据读完
 
-}
-bool http_conn::write(){//写入响应报文
-    int temp = 0;
-
-    if (bytes_to_send == 0)
+/*循环读取客户数据，直到无数据可读或对方关闭连接,非阻塞ET工作模式下，需要一次性将数据读完*/
+bool http_conn::read_once(){
+    if (m_read_idx >= READ_BUFFER_SIZE)
     {
-        modfd(m_epollfd, m_sockfd, EPOLLIN);
-        init();
+        return false;
+    }
+    int bytes_read = 0;
+
+#ifdef connfdLT
+
+    bytes_read = recv(m_sockfd, m_read_buf + m_read_idx, READ_BUFFER_SIZE - m_read_idx, 0);
+    m_read_idx += bytes_read;
+
+    if (bytes_read <= 0)
+    {
+        return false;
+    }
+
+    return true;
+
+#endif
+
+#ifdef connfdET
+    while (true)
+    {
+        bytes_read = recv(m_sockfd, m_read_buf + m_read_idx, READ_BUFFER_SIZE - m_read_idx, 0);
+        if (bytes_read == -1)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                break;
+            return false;
+        }
+        else if (bytes_read == 0)
+        {
+            return false;
+        }
+        m_read_idx += bytes_read;
+    }
+    return true;
+#endif
+}
+
+/*写入响应报文，#此为书中原代码，请求较大文件时会报错*/
+bool http_conn::write(){
+    int temp = 0;//------------------------------------temp为发送的字节数
+
+    if (bytes_to_send == 0)//--------------------------若未发送的字节数为0表示响应报文为空，一般不会出现这种情况
+    {
+        modfd(m_epollfd, m_sockfd, EPOLLIN);//---------修改监听事件为读
+        init();//--------------------------------------然后调用 init() 函数重置连接状态
         return true;
     }
 
-    while (1)
+    while (1)//----------------------------------------如果待发送的字节数不为零，进入循环
     {
-        temp = writev(m_sockfd, m_iv, m_iv_count);
+        temp = writev(m_sockfd, m_iv, m_iv_count);//---将响应报文的状态行、消息头、空行和文件发送给浏览器端
 
-        if (temp < 0)
+        if (temp < 0)//--------------------------------如果writev()的返回值temp小于 0，表示发送出现错误
         {
-            if (errno == EAGAIN)
+            if (errno == EAGAIN)//---------------------如果errno=EAGAIN，表示发送缓冲区已满，需要等待下次可写事件
             {
-                modfd(m_epollfd, m_sockfd, EPOLLOUT);
+                modfd(m_epollfd, m_sockfd, EPOLLOUT);//修改监听事件为写
                 return true;
             }
             unmap();
             return false;
         }
-
-        bytes_have_send += temp;
-        bytes_to_send -= temp;
-        if (bytes_have_send >= m_iv[0].iov_len)
+        /*如果 writev() 的返回值大于等于 0，表示发送成功*/
+        bytes_have_send += temp;//---------------------更新已发送字节
+        bytes_to_send -= temp;//-----------------------更新待发送字节数
+        /*根据已发送字节数的情况，更新 m_iv 结构体数组中的数据*/
+        if (bytes_have_send >= m_iv[0].iov_len)//------如果已发送字节数>=第一个数据块的长度，说明第一个数据块已经完全发送
         {
-            m_iv[0].iov_len = 0;
+            m_iv[0].iov_len = 0;//---------------------将其长度置为 0
             m_iv[1].iov_base = m_file_address + (bytes_have_send - m_write_idx);
-            m_iv[1].iov_len = bytes_to_send;
+            m_iv[1].iov_len = bytes_to_send;//---------更新第二个数据块的起始位置和长度,m_write_idx为第一个数据块的大小
         }
-        else
-        {
+        else//-----------------------------------------否则表示第一个数据块还没发送完毕
+        {                                   //---------更新第一个数据块的起始位置和长度
             m_iv[0].iov_base = m_write_buf + bytes_have_send;
             m_iv[0].iov_len = m_iv[0].iov_len - bytes_have_send;
         }
-
-        if (bytes_to_send <= 0)
+        /*检查待发送字节数是否小于等于 0*/
+        if (bytes_to_send <= 0)//----------------------如果是，表示所有数据已经发送完毕
         {
-            unmap();
-            modfd(m_epollfd, m_sockfd, EPOLLIN);
-
-            if (m_linger)
+            unmap();//---------------------------------调用 unmap() 函数解除文件和内存的映射
+            modfd(m_epollfd, m_sockfd, EPOLLIN);//-----修改监听事件为读
+            /*然后根据是否需要保持连接（m_linger）来执行不同的操作*/
+            if (m_linger)//----------------------------如果需要保持连接
             {
-                init();
+                init();//------------------------------重置连接状态并返回 true
                 return true;
             }
-            else
+            else//-------------------------------------如果不需要保持连接，返回false
             {
                 return false;
             }
         }
     }
 }
+
+/*从MySQL数据库中查询user表中的数据，将用户名和密码存储到一个std::map对象中，以便后续在处理HTTP请求时进行用户身份验证*/
 void http_conn::initmysql_result(connection_pool *connPool){
+    //先从连接池中取一个连接
+    MYSQL *mysql = NULL;
+    connectionRAII mysqlcon(&mysql, connPool);
 
+    //在user表中检索username，passwd数据，浏览器端输入
+    if (mysql_query(mysql, "SELECT username,passwd FROM user"))
+    {
+        //LOG_ERROR("SELECT error:%s\n", mysql_error(mysql));
+        printf("SELECT error:%s\n", mysql_error(mysql));
+    }
+
+    //从表中检索完整的结果集
+    MYSQL_RES *result = mysql_store_result(mysql);
+
+    //返回结果集中的列数
+    int num_fields = mysql_num_fields(result);
+
+    //返回所有字段结构的数组
+    MYSQL_FIELD *fields = mysql_fetch_fields(result);
+
+    //从结果集中获取下一行，将对应的用户名和密码，存入map中
+    while (MYSQL_ROW row = mysql_fetch_row(result))
+    {
+        string temp1(row[0]);
+        string temp2(row[1]);
+        users[temp1] = temp2;
+    }
 }
+
 /*private中的函数*/
-void http_conn::init(){//对私有成员变量进行初始化,check_state默认为分析请求行状态
 
+/*对私有成员变量进行初始化,check_state默认为分析请求行状态*/
+void http_conn::init(){
+    mysql = NULL;
+    bytes_to_send = 0;
+    bytes_have_send = 0;
+    m_check_state = CHECK_STATE_REQUESTLINE;
+    m_linger = false;
+    m_method = GET;
+    m_url = 0;
+    m_version = 0;
+    m_content_length = 0;
+    m_host = 0;
+    m_start_line = 0;
+    m_checked_idx = 0;
+    m_read_idx = 0;
+    m_write_idx = 0;
+    cgi = 0;
+    memset(m_read_buf, '\0', READ_BUFFER_SIZE);
+    memset(m_write_buf, '\0', WRITE_BUFFER_SIZE);
+    memset(m_real_file, '\0', FILENAME_LEN);
 }
+
 /*此时从状态机已提前将一行的末尾字符\r\n变为\0\0（\0表示字符串的结尾），所以text可以直接取出完整的行进行解析*/
-http_conn::HTTP_CODE http_conn::process_read(){//--通过while循环，将主从状态机进行封装，对报文的每一行进行循环处理
+http_conn::HTTP_CODE http_conn::process_read(){
     LINE_STATUS line_status = LINE_OK;//-----------初始化从状态机状态
     HTTP_CODE ret = NO_REQUEST;//------------------初始化HTTP请求解析结果
     char *text = 0;//------------------------------定义text指针变量用于存储读取的字符
@@ -165,6 +285,7 @@ http_conn::HTTP_CODE http_conn::process_read(){//--通过while循环，将主从
     但在POST请求报文中，请求内容的末尾没有任何字符，用parse_line()函数会返回LINE_OPEN，如果继续用该条件判断是否进入循环就会丢弃最后一行的请求内容，
     这里转而使用主状态机的状态m_check_state作为循环入口条件，不过解析完请求正文后m_check_state还是CHECK_STATE_CONTENT，为了防止再次进入循环，
     增加line_status == LINE_OK判断，在完成请求内容解析后，line_status==LINE_OPEN，从而跳出循环。
+    通过while循环，将主从状态机进行封装，对报文的每一行进行循环处理
     */
     while ((m_check_state == CHECK_STATE_CONTENT && line_status == LINE_OK) || ((line_status = parse_line()) == LINE_OK)){
         
@@ -207,9 +328,10 @@ http_conn::HTTP_CODE http_conn::process_read(){//--通过while循环，将主从
     }
     return NO_REQUEST;//---------------------------如果之前都没有返回，说明请求不完整
 }
+
 /*传入peocess_write()函数的参数是process_read()函数的返回值，是其解析请求报文的HTTP_CODE结果，
 而process_read()函数的返回值有部分是do_request()返回的，process()中调用process_write向m_write_buf中写入响应报文*/
-bool http_conn::process_write(HTTP_CODE ret){//---------向写缓冲区写入响应报文
+bool http_conn::process_write(HTTP_CODE ret){
     switch (ret)//--------------------------------------根据报文解析的HTTP_CODE结果进行如下处理
     {
         case INTERNAL_ERROR://--------------------------如果是服务器内部错误
@@ -268,6 +390,7 @@ bool http_conn::process_write(HTTP_CODE ret){//---------向写缓冲区写入响
     bytes_to_send = m_write_idx;//----------------------需要发送的总字节数（只有响应报文数据，不包含文件数据）
     return true;//--------------------------------------虽然没有返回的文件，但是只要返回了响应报文就算true
 }
+
 /*主状态机解析http请求行，获得请求方法，目标url及http版本号；
 在HTTP报文中，请求行用来说明请求类型,要访问的资源以及所使用的HTTP版本，其中各个部分之间通过\t或空格分隔 */
 http_conn::HTTP_CODE http_conn::parse_request_line(char *text){
@@ -318,6 +441,7 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char *text){
     m_check_state = CHECK_STATE_HEADER;//--------把主状态机的状态改为解析请求头部
     return NO_REQUEST;//-------------------------返回请求不完整，表示还要继续读入请求报文
 }
+
 /*解析完请求行后，主状态机继续分析请求头和空行。
 通过判断当前的text首位是不是\0字符，若是，则当前处理的是空行，若不是，则当前处理的是请求头*/
 http_conn::HTTP_CODE http_conn::parse_headers(char *text){
@@ -359,6 +483,7 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text){
     }
     return NO_REQUEST;//--------------------------如果未正常到尾部则返回请求不完整，需要继续解析
 }
+
 /*用于解析请求内容*/
 http_conn::HTTP_CODE http_conn::parse_content(char *text){
     if (m_read_idx >= (m_content_length + m_checked_idx))//-m_read_idx为读缓冲区m_read_buf末尾的下一个位置，判断buffer中是否读取了消息体
@@ -370,6 +495,7 @@ http_conn::HTTP_CODE http_conn::parse_content(char *text){
     }
     return NO_REQUEST;//------------------------------------如果buffer中没有完整读取请求内容，返回请求报文不完整
 }
+
 /*为生成响应报文做准备,该函数将网站根目录和url文件拼接，然后通过stat判断该文件属性
 浏览器网址栏中的字符，即url，可以将其抽象成ip:port/xxx，xxx通过html文件的action属性进行设置
 m_url为请求报文中解析出的请求资源，也就是/xxx，有8种情况*/
@@ -500,6 +626,7 @@ http_conn::HTTP_CODE http_conn::do_request(){
     close(fd);//------------------------------------------------避免文件描述符的浪费和占用
     return FILE_REQUEST;//--------------------------------------表示请求文件存在，且可以访问
 }
+
 /*从状态机，用于读取一行并把'\r\n'换成'\0\0'，返回值为行的读取状态，有LINE_OK,LINE_BAD,LINE_OPEN*/
 http_conn::LINE_STATUS http_conn::parse_line(){
     char temp;
@@ -531,12 +658,19 @@ http_conn::LINE_STATUS http_conn::parse_line(){
     }
     return LINE_OPEN;//--------------------------------------并没有找到\r\n，需要继续接收
 }
-void http_conn::unmap(){
 
+/*将文件和内存的映射解除*/
+void http_conn::unmap(){
+    if (m_file_address)
+    {
+        munmap(m_file_address, m_file_stat.st_size);
+        m_file_address = 0;
+    }
 }
+
 /*生成响应报文的8个部分，以下函数均由do_request()调用*/
-/*将数据写入写缓冲区*/
-bool http_conn::add_response(const char *format, ...){//---------format 是一个格式化字符串，类似于 printf 函数的格式化参数
+/*将数据写入写缓冲区，format 是一个格式化字符串，类似于 printf 函数的格式化参数*/
+bool http_conn::add_response(const char *format, ...){
     if (m_write_idx >= WRITE_BUFFER_SIZE)//----------------------如果写入内容超出m_write_buf大小则报错
         return false;
     va_list arg_list;//------------------------------------------定义可变参数列表
@@ -554,26 +688,40 @@ bool http_conn::add_response(const char *format, ...){//---------format 是一�
     //Log::get_instance()->flush();
     return true;
 }
-bool http_conn::add_content(const char *content){//--------------添加文本content，将 content 作为格式化字符串的参数传入
+
+/*添加文本content，将 content 作为格式化字符串的参数传入*/
+bool http_conn::add_content(const char *content){
     return add_response("%s", content);//------------------------调用add_response写响应正文，并返回是否写成功
 }
-bool http_conn::add_status_line(int status, const char *title){//添加状态行
+
+/*添加状态行*/
+bool http_conn::add_status_line(int status, const char *title){
     return add_response("%s %d %s\r\n", "HTTP/1.1", status, title);
 }
-bool http_conn::add_headers(int content_length){//---------------添加消息报头
+
+/*添加消息报头*/
+bool http_conn::add_headers(int content_length){
     add_content_length(content_length);
     add_linger();
     add_blank_line();
 }
-bool http_conn::add_content_type(){//----------------------------添加文本类型，这里是html
+
+/*添加文本类型，这里是html*/
+bool http_conn::add_content_type(){
     return add_response("Content-Type:%s\r\n", "text/html");
 }
-bool http_conn::add_content_length(int content_length){//--------添加Content-Length，表示响应报文的长度
+
+/*添加Content-Length，表示响应报文的长度*/
+bool http_conn::add_content_length(int content_length){
     return add_response("Content-Length:%d\r\n", content_length);
 }
-bool http_conn::add_linger(){//----------------------------------添加连接状态，通知浏览器端是保持连接还是关闭
+
+/*添加连接状态，通知浏览器端是保持连接还是关闭*/
+bool http_conn::add_linger(){
     return add_response("Connection:%s\r\n", (m_linger == true) ? "keep-alive" : "close");
 }
-bool http_conn::add_blank_line(){//------------------------------添加空行
+
+/*添加空行*/
+bool http_conn::add_blank_line(){
     return add_response("%s", "\r\n");
 }

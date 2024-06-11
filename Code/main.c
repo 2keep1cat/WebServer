@@ -39,11 +39,11 @@ static int epollfd = 0;
 //信号处理函数
 void sig_handler(int sig)
 {
-    //为保证函数的可重入性，保留原来的errno
-    int save_errno = errno;
+    //可重入性表示中断后再次进入该函数，环境变量与之前相同，不会丢失数据
+    int save_errno = errno;//为保证函数的可重入性，保留原来的errno
     int msg = sig;
-    send(pipefd[1], (char *)&msg, 1, 0);
-    errno = save_errno;
+    send(pipefd[1], (char *)&msg, 1, 0);//将信号值从管道写端写入，传输字符类型，而非整型
+    errno = save_errno;//将原来的errno赋值为当前的errno
 }
 
 //设置信号函数
