@@ -38,7 +38,7 @@ int setnonblocking(int fd){
     return old_option;//-------------------------返回旧的文件状态标志位
 }
 
-/*将内核事件表注册读事件，ET模式，选择开启EPOLLONESHOT*/
+/*向内核事件表注册读事件，ET模式，选择是否开启EPOLLONESHOT*/
 void addfd(int epollfd, int fd, bool one_shot){
     epoll_event event;//-------------------------定义epoll_event类型变量event，作为传入epoll_ctl函数的事件
     event.data.fd = fd;//------------------------将fd赋给event事件
