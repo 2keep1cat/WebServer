@@ -39,29 +39,29 @@ static int epollfd = 0;
 /*信号处理函数（传入sigaction结构体使用），仅仅通过管道发送信号值，不处理信号对应的逻辑，缩短异步执行时间，减少对主程序的影响*/
 void sig_handler(int sig)
 {
-    int save_errno = errno;//-----------------为保证函数的可重入性，保留原来的errno，可重入性表示中断后再次进入该函数，环境变量与之前相同
+    int save_errno = errno;//--------------------为保证函数的可重入性，保留原来的errno，可重入性表示中断后再次进入该函数，环境变量与之前相同
     int msg = sig;
-    send(pipefd[1], (char *)&msg, 1, 0);//----将信号值从管道写端写入，传输字符类型，而非整型
-    errno = save_errno;//---------------------将原来的errno赋值为当前的errno
+    send(pipefd[1], (char *)&msg, 1, 0);//-------将信号值从管道写端写入，传输字符类型，而非整型
+    errno = save_errno;//------------------------将原来的errno赋值为当前的errno
 }
 
 /*通过sigaction结构体对信号设置处理方式*/
 void addsig(int sig, void(handler)(int), bool restart = true)
 {
-    struct sigaction sa;//--------------------创建sigaction结构体变量
-    memset(&sa, '\0', sizeof(sa));//----------memset()用于将一块内存区域设置为指定值，&sa指向内存区域的指针，
-                                  //----------'\0'是要设置的值（字符串终止符），sizeof(sa)是要设置的字节数
-    sa.sa_handler = handler;//----------------信号处理函数中仅仅发送信号值，不做对应逻辑处理
+    struct sigaction sa;//-----------------------创建sigaction结构体变量
+    memset(&sa, '\0', sizeof(sa));//-------------memset()用于将一块内存区域设置为指定值，&sa指向内存区域的指针，
+                                  //-------------'\0'是要设置的值（字符串终止符），sizeof(sa)是要设置的字节数
+    sa.sa_handler = handler;//-------------------信号处理函数中仅仅发送信号值，不做对应逻辑处理
     if (restart)
-        sa.sa_flags |= SA_RESTART;//----------通过restart参数选择是否设置SA_RESTART，即被信号打断的系统调用自动重启
-    sigfillset(&sa.sa_mask);//----------------将所有信号添加到信号集sa_mask中，sa_mask用来指定在信号处理函数执行期间需要被屏蔽的信号
-                                            /*assert() 是一个宏定义，用于在程序中进行断言（Assertion）检查，
-                                              断言是一种用于检查程序中的假设条件是否成立的工具，
-                                              assert() 宏接受一个表达式作为参数，
-                                              如果该表达式的值为假，则断言失败并终止程序的执行。
-                                              如果表达式的值为真，则断言通过，程序继续执行。*/
-    assert(sigaction(sig, &sa, NULL) != -1);//执行sigaction函数，对传入的sig信号设置新的处理方式sa，
-                                            //即handler信号处理函数、SA_RESTART和屏蔽信号处理函数执行期间屏蔽所有信号
+        sa.sa_flags |= SA_RESTART;//-------------通过restart参数选择是否设置SA_RESTART，即被信号打断的系统调用自动重启
+    sigfillset(&sa.sa_mask);//-------------------将所有信号添加到信号集sa_mask中，sa_mask用来指定在信号处理函数执行期间需要被屏蔽的信号
+                                            /*---assert() 是一个宏定义，用于在程序中进行断言（Assertion）检查，
+                                              ---断言是一种用于检查程序中的假设条件是否成立的工具，
+                                              ---assert() 宏接受一个表达式作为参数，
+                                              ---如果该表达式的值为假，则断言失败并终止程序的执行。
+                                              ---如果表达式的值为真，则断言通过，程序继续执行。*/
+    assert(sigaction(sig, &sa, NULL) != -1);//---执行sigaction函数，对传入的sig信号设置新的处理方式sa，
+                                            //---即handler信号处理函数、SA_RESTART和屏蔽信号处理函数执行期间屏蔽所有信号
 }
 
 //定时处理任务，重新定时以不断触发SIGALRM信号
@@ -71,15 +71,15 @@ void timer_handler()
     alarm(TIMESLOT);//alarm 用于设置一个定时器，在TIMESLOT秒后发送 SIGALRM 信号给进程
 }
 
-//定时器回调函数，删除非活动连接在socket上的注册事件，并关闭
+/*定时器回调函数，删除非活动连接在socket上的注册事件，并关闭*/
 void cb_func(client_data *user_data)
-{
+{                                              //从epollfd实例中删除文件描述符user_data->sockfd对应的事件,0是无用参数
     epoll_ctl(epollfd, EPOLL_CTL_DEL, user_data->sockfd, 0);
-    assert(user_data);
-    close(user_data->sockfd);
-    http_conn::m_user_count--;
-    LOG_INFO("close fd %d", user_data->sockfd);
-    Log::get_instance()->flush();
+    assert(user_data);//-------------------------确保user_data非空
+    close(user_data->sockfd);//------------------关闭文件描述符
+    http_conn::m_user_count--;//-----------------对 http_conn 类的静态成员变量 m_user_count 进行自减操作，即用户数-1
+    LOG_INFO("close fd %d", user_data->sockfd);//记录关闭文件描述符的操作，以及被关闭的文件描述符的值
+    Log::get_instance()->flush();//--------------确保在关闭文件描述符后将日志写入磁盘或输出设备，以避免日志丢失或延迟显示
 }
 
 void show_error(int connfd, const char *info)

@@ -73,7 +73,7 @@ public:
     void initmysql_result(connection_pool *connPool);//同步线程初始化数据库读取表,使用线程池初始化数据库表
 
     static int m_epollfd;
-    static int m_user_count;
+    static int m_user_count;//------------------------用于跟踪当前活动的用户数
     MYSQL *mysql;
 
 private:
