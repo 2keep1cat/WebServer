@@ -33,7 +33,7 @@ extern int setnonblocking(int fd);
 
 //设置定时器相关参数
 static int pipefd[2];//用于表示管道
-static sort_timer_lst timer_lst;
+static sort_timer_lst timer_lst;//创建定时器容器链表
 static int epollfd = 0;
 
 /*信号处理函数（传入sigaction结构体使用），仅仅通过管道发送信号值，不处理信号对应的逻辑，缩短异步执行时间，减少对主程序的影响*/
@@ -45,7 +45,7 @@ void sig_handler(int sig)
     errno = save_errno;//------------------------将原来的errno赋值为当前的errno
 }
 
-/*通过sigaction结构体对信号设置处理方式*/
+/*通过sigaction结构体对信号设置处理方式，即使用handler作为信号处理函数，默认设置SA_RESTART，信号处理函数执行期间屏蔽所有信号*/
 void addsig(int sig, void(handler)(int), bool restart = true)
 {
     struct sigaction sa;//-----------------------创建sigaction结构体变量
@@ -61,17 +61,17 @@ void addsig(int sig, void(handler)(int), bool restart = true)
                                               ---如果该表达式的值为假，则断言失败并终止程序的执行。
                                               ---如果表达式的值为真，则断言通过，程序继续执行。*/
     assert(sigaction(sig, &sa, NULL) != -1);//---执行sigaction函数，对传入的sig信号设置新的处理方式sa，
-                                            //---即handler信号处理函数、SA_RESTART和屏蔽信号处理函数执行期间屏蔽所有信号
+                                            //---即handler信号处理函数、SA_RESTART和信号处理函数执行期间屏蔽所有信号
 }
 
-//定时处理任务，重新定时以不断触发SIGALRM信号
+/*定时处理任务，重新定时以不断触发SIGALRM信号*/
 void timer_handler()
 {
-    timer_lst.tick();
-    alarm(TIMESLOT);//alarm 用于设置一个定时器，在TIMESLOT秒后发送 SIGALRM 信号给进程
+    timer_lst.tick();//--------------------------先处理定时器容器中的超时任务
+    alarm(TIMESLOT);//---------------------------alarm 用于设置定时，在TIMESLOT秒后发送 SIGALRM 信号给当前进程
 }
 
-/*定时器回调函数，删除非活动连接在socket上的注册事件，并关闭*/
+/*定时器回调函数，删除非活动连接在epoll实例上的注册事件，并关闭*/
 void cb_func(client_data *user_data)
 {                                              //从epollfd实例中删除文件描述符user_data->sockfd对应的事件,0是无用参数
     epoll_ctl(epollfd, EPOLL_CTL_DEL, user_data->sockfd, 0);
@@ -105,9 +105,9 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    int port = atoi(argv[1]);
+    int port = atoi(argv[1]);//-------------------------将运行程序时输入的端口号转为整型（#可以改为固定端口号以免每次输入）
 
-    addsig(SIGPIPE, SIG_IGN);
+    addsig(SIGPIPE, SIG_IGN);//-------------------------使用SIG_IGN作为信号处理函数，表示忽略信号SIGPIPE
 
     //创建数据库连接池
     connection_pool *connPool = connection_pool::GetInstance();
@@ -129,31 +129,32 @@ int main(int argc, char *argv[])
 
     //初始化数据库读取表
     users->initmysql_result(connPool);
-
-    int listenfd = socket(PF_INET, SOCK_STREAM, 0);
+    //步骤为socket(),setsockopt(),bind(),listen(),epoll_create(),epoll_ctl(),epoll_wait()
+    int listenfd = socket(PF_INET, SOCK_STREAM, 0);//---服务器用于监听客户端的连接请求的套接字
     assert(listenfd >= 0);
 
     //struct linger tmp={1,0};
     //SO_LINGER若有数据待发送，延迟关闭
     //setsockopt(listenfd,SOL_SOCKET,SO_LINGER,&tmp,sizeof(tmp));
-
+    
+    /*----------创建可以用于下面bind()函数绑定的套接字地址------------ */
     int ret = 0;
     struct sockaddr_in address;
-    bzero(&address, sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_ANY);
-    address.sin_port = htons(port);
+    bzero(&address, sizeof(address));//-----------------将 address 的内存空间清零
+    address.sin_family = AF_INET;//---------------------设置地址协议族为IPV4
+    address.sin_addr.s_addr = htonl(INADDR_ANY);//------设置IP地址为任意IP地址
+    address.sin_port = htons(port);//-------------------设置端口号为运行程序时手动输入的端口号
 
     int flag = 1;
-    setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
-    ret = bind(listenfd, (struct sockaddr *)&address, sizeof(address));
+    setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));//设置端口复用，可以在套接字关闭后立即重新使用之前绑定的地址
+    ret = bind(listenfd, (struct sockaddr *)&address, sizeof(address));//将套接字绑定到指定的地址
     assert(ret >= 0);
-    ret = listen(listenfd, 5);
+    ret = listen(listenfd, 5);//------------------------可以同时等待处理的最大连接数为5
     assert(ret >= 0);
 
     //创建内核事件表
-    epoll_event events[MAX_EVENT_NUMBER];
-    epollfd = epoll_create(5);
+    epoll_event events[MAX_EVENT_NUMBER];//-------------用于存储就绪事件的数组
+    epollfd = epoll_create(5);//------------------------epoll实例（内核事件表）的文件描述符
     assert(epollfd != -1);
 
     addfd(epollfd, listenfd, false);
@@ -169,30 +170,32 @@ int main(int argc, char *argv[])
     addsig(SIGTERM, sig_handler, false);//--------------设置SIGTERM的信号处理函数为sig_handler，不设置SA_RESTART
     bool stop_server = false;//-------------------------初始化服务器停止标志
 
-    client_data *users_timer = new client_data[MAX_FD];
+    client_data *users_timer = new client_data[MAX_FD];//创建连接资源数组，连接资源包括客户端套接字地址、套接字文件描述符和定时器指针
 
-    bool timeout = false;//-----------------------------初始化超时标志
-    alarm(TIMESLOT);//----------------------------------每隔TIMESLOT时间触发SIGALRM信号
+    bool timeout = false;//-----------------------------初始化超时标志，默认为false
+    alarm(TIMESLOT);//----------------------------------隔TIMESLOT秒后触发一次SIGALRM信号
 
     while (!stop_server)
-    {   /*通过 epoll_wait 等待事件的发生。每当有事件发生时，循环处理这些事件*/
+    {   /*通过 epoll_wait 阻塞等待事件的发生。将就绪事件存入传出参数events中，number为就绪事件数*/
         int number = epoll_wait(epollfd, events, MAX_EVENT_NUMBER, -1);
-        if (number < 0 && errno != EINTR)//-------------监测发生事件的文件描述符
+        /*number < 0 表示 epoll_wait 函数调用出现了错误。具体的错误原因可以通过查看错误码 errno 来判断
+        EINTR 表示在等待事件期间收到了一个信号。errno != EINTR，说明发生了其他类型的错误*/
+        if (number < 0 && errno != EINTR)
         {
-            LOG_ERROR("%s", "epoll failure");
+            LOG_ERROR("%s", "epoll failure");//---------输出一个错误日志
             break;
         }
 
         for (int i = 0; i < number; i++)//--------------轮询文件描述符
         {
-            int sockfd = events[i].data.fd;
-
-            //处理新到的客户连接
-            if (sockfd == listenfd)
+            int sockfd = events[i].data.fd;//-----------从events就绪事件数组中取一个事件的文件描述符
+            
+            if (sockfd == listenfd)//-------------------通过检查 sockfd 是否等于 listenfd，可以确定是否有新的连接请求到达
             {
-                struct sockaddr_in client_address;
+                struct sockaddr_in client_address;//----新建一个sockaddr_in类型的结构体用于接受客户端的IP地址和端口号
                 socklen_t client_addrlength = sizeof(client_address);
 #ifdef listenfdLT
+                //accept从监听套接字listenfd中提取第一个等待连接的请求，并返回一个新的文件描述符 connfd，表示这个新连接的套接字
                 int connfd = accept(listenfd, (struct sockaddr *)&client_address, &client_addrlength);
                 if (connfd < 0)
                 {
@@ -209,15 +212,15 @@ int main(int argc, char *argv[])
 
                 //初始化client_data数据
                 //创建定时器，设置回调函数和超时时间，绑定用户数据，将定时器添加到链表中
-                users_timer[connfd].address = client_address;
-                users_timer[connfd].sockfd = connfd;
-                util_timer *timer = new util_timer;
-                timer->user_data = &users_timer[connfd];
-                timer->cb_func = cb_func;
-                time_t cur = time(NULL);
-                timer->expire = cur + 3 * TIMESLOT;
-                users_timer[connfd].timer = timer;
-                timer_lst.add_timer(timer);
+                users_timer[connfd].address = client_address;//将该接收到的连接的套接字的地址放入连接资源数组中
+                users_timer[connfd].sockfd = connfd;//---------将该接收到的连接的套接字的文件描述符放入连接资源数组中
+                util_timer *timer = new util_timer;//----------新建一个定时器timer和该连接一起放入连接资源数组中，下面给定时器赋值
+                timer->user_data = &users_timer[connfd];//-----将该连接的资源赋值给定时器的user_data
+                timer->cb_func = cb_func;//--------------------定时器的回调函数设置为cb_func
+                time_t cur = time(NULL);//---------------------获取当前时间
+                timer->expire = cur + 3 * TIMESLOT;//----------定时器的超时时间设置为当前时间+3倍TIMESLOT(即15秒)
+                users_timer[connfd].timer = timer;//-----------设置好该定时器后将定时器加入该连接的连接资源users_timer[connfd]
+                timer_lst.add_timer(timer);//------------------将timer定时器加入定时器链表
 #endif
 
 #ifdef listenfdET
@@ -252,14 +255,16 @@ int main(int argc, char *argv[])
                 continue;
 #endif
             }
-
+            //events[i].events表示就绪事件数组中的第i个事件的事件类型，
+            //EPOLLRDHUP表示对端关闭连接或半关闭连接（即对端关闭了写入），EPOLLHUP表示挂起事件，通常表示连接被挂起或断开，EPOLLERR 表示发生错误事件
+            //使用按位与运算符 & 检查当前事件是否包含上述任意一个事件类型
             else if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR))
             {
                 //服务器端关闭连接，移除对应的定时器
-                util_timer *timer = users_timer[sockfd].timer;
-                timer->cb_func(&users_timer[sockfd]);
+                util_timer *timer = users_timer[sockfd].timer;//sockfd是第i个事件的文件描述符，这里表示用timer指针指向该事件的连接资源中的定时器
+                timer->cb_func(&users_timer[sockfd]);//---------调用定时器中的回调函数删除非活动连接在epoll实例上的注册事件，并关闭
 
-                if (timer)
+                if (timer)//------------------------------------删除定时器
                 {
                     timer_lst.del_timer(timer);
                 }

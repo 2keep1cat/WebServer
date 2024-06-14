@@ -7,11 +7,11 @@
 
 class util_timer;//------------------前向声明（只能在指针或引用类型成员时使用），连接资源结构体成员需要用到定时器类
 
-/*定时器设计中的连接资源*/
+/*定时器类中的连接资源*/
 struct client_data
-{
+{ 
     sockaddr_in address;//-----------客户端套接字地址
-    int sockfd;//--------------------文件描述符
+    int sockfd;//--------------------套接字文件描述符
     util_timer *timer;//-------------定时器
 };
 
@@ -137,57 +137,57 @@ public:
         timer->next->prev = timer->prev;
         delete timer;
     }
+
+    /*定时任务处理函数，处理超时任务*/
     void tick()
     {
-        if (!head)
+        if (!head)//---------------------------如果头节点为空，说明链表为空，结束
         {
             return;
         }
         //printf( "timer tick\n" );
         LOG_INFO("%s", "timer tick");
         Log::get_instance()->flush();
-        time_t cur = time(NULL);
-        util_timer *tmp = head;
-        while (tmp)
+        time_t cur = time(NULL);//-------------获取当前时间
+        util_timer *tmp = head;//--------------新建定时器指针tmp指向头节点，用于删除节点
+        while (tmp)//--------------------------tmp始终指向第一个节点，对所有超时节点进行处理
         {
-            if (cur < tmp->expire)
+            if (cur < tmp->expire)//-----------目前节点的超时时间还没到，它后面的也必然都没到，退出循环
             {
                 break;
             }
-            tmp->cb_func(tmp->user_data);
-            head = tmp->next;
-            if (head)
+            tmp->cb_func(tmp->user_data);//----超时了，则用定时器的回调函数处理
+            head = tmp->next;//----------------处理完后就可以删除该节点
+            if (head)//------------------------如果链表空了，则把prev指针置空，之前一直未处理
             {
                 head->prev = NULL;
             }
-            delete tmp;
-            tmp = head;
+            delete tmp;//----------------------删除该节点对应的内存空间
+            tmp = head;//----------------------tmp继续指向头节点
         }
     }
 
 private:
-    //私有成员，被公有成员add_timer和adjust_time调用
-    //主要用于调整链表内部结点
+    /*私有成员，被公有成员add_timer和adjust_time调用
+    用于添加timer计时器，要求头节点非空且timer的超时时间晚于lst_head*/
     void add_timer(util_timer *timer, util_timer *lst_head)
     {
-        util_timer *prev = lst_head;
-        util_timer *tmp = prev->next;
-        //遍历当前结点之后的链表，按照超时时间找到目标定时器对应的位置，常规双向链表插入操作
-        while (tmp)
+        util_timer *prev = lst_head;//---------新建定时器指针prev指向头节点
+        util_timer *tmp = prev->next;//--------新建定时器指针tmp指向头节点的下一个
+        while (tmp)//--------------------------遍历链表，按照超时时间找位置，插入prev和tmp之间
         {
-            if (timer->expire < tmp->expire)
+            if (timer->expire < tmp->expire)//-直到timer的超时时间早于tmp的
             {
-                prev->next = timer;
+                prev->next = timer;//----------就将timer插入到prev和tmp之间
                 timer->next = tmp;
                 tmp->prev = timer;
                 timer->prev = prev;
                 break;
             }
-            prev = tmp;
+            prev = tmp;//----------------------还没到目标位置就让tmp和prev一起移动
             tmp = tmp->next;
         }
-        //遍历完发现，目标定时器需要放到尾结点处
-        if (!tmp)
+        if (!tmp)//----------------------------遍历完发现，目标定时器需要放到尾结点处
         {
             prev->next = timer;
             timer->prev = prev;
@@ -197,9 +197,8 @@ private:
     }
 
 private:
-    //头尾结点
-    util_timer *head;
-    util_timer *tail;
+    util_timer *head;//------------------------头结点
+    util_timer *tail;//------------------------尾结点
 };
 
 #endif
