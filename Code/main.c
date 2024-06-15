@@ -113,23 +113,23 @@ int main(int argc, char *argv[])
     connection_pool *connPool = connection_pool::GetInstance();
     connPool->init("localhost", "zhuwenjie", "421536", "yourdb", 3306, 8);
 
-    //创建线程池
-    threadpool<http_conn> *pool = NULL;
-    try
+    //用自定义的threadpool类创建线程池
+    threadpool<http_conn> *pool = NULL;//---------------声明一个指向 threadpool<http_conn> 类型对象的指针 pool，并将其初始化为 NULL
+    try //----------------------------------------------使用 try-catch 块来捕获可能的异常情况
     {
-        pool = new threadpool<http_conn>(connPool);
+        pool = new threadpool<http_conn>(connPool);//---对 threadpool<http_conn> 进行动态分配内存，并将分配的对象的指针赋值给 pool
     }
-    catch (...)
+    catch (...) 
     {
-        return 1;
+        return 1;//-------------------------------------如果在动态分配内存的过程中出现异常，catch 块将捕获异常，并执行相应的操作
     }
 
-    http_conn *users = new http_conn[MAX_FD];
+    http_conn *users = new http_conn[MAX_FD];//---------http_conn类数组，用于处理请求报文并生成响应报文
     assert(users);
 
     //初始化数据库读取表
     users->initmysql_result(connPool);
-    //步骤为socket(),setsockopt(),bind(),listen(),epoll_create(),epoll_ctl(),epoll_wait()
+    //步骤为socket(),setsockopt(),bind(),listen(),epoll_create(),epoll_ctl(),epoll_wait(),accept()
     int listenfd = socket(PF_INET, SOCK_STREAM, 0);//---服务器用于监听客户端的连接请求的套接字
     assert(listenfd >= 0);
 
@@ -208,7 +208,7 @@ int main(int argc, char *argv[])
                     LOG_ERROR("%s", "Internal server busy");
                     continue;
                 }
-                users[connfd].init(connfd, client_address);
+                users[connfd].init(connfd, client_address);//--用提取出的新连接的套接字找到它在users这个http_conn类数组中的位置，并初始化
 
                 //初始化client_data数据
                 //创建定时器，设置回调函数和超时时间，绑定用户数据，将定时器添加到链表中
@@ -306,70 +306,67 @@ int main(int argc, char *argv[])
                 }
             }
 
-            //处理客户连接上接收到的数据
+            //当就绪事件数组中的第i个事件的事件类型为可读时，处理客户连接上接收到的数据
             else if (events[i].events & EPOLLIN)
             {
-                util_timer *timer = users_timer[sockfd].timer;
-                if (users[sockfd].read_once())
-                {
+                util_timer *timer = users_timer[sockfd].timer;//sockfd是第i个事件的文件描述符，这里表示用timer指针指向该事件的连接资源中的定时器
+                if (users[sockfd].read_once())//----------------读取浏览器端发来的请求报文，users是http_conn类数组，如果读取成功
+                {                                             //记录日志信息，包括客户端的 IP 地址
                     LOG_INFO("deal with the client(%s)", inet_ntoa(users[sockfd].get_address()->sin_addr));
                     Log::get_instance()->flush();
-                    //若监测到读事件，将该事件放入请求队列
-                    pool->append(users + sockfd);
+                    
+                    pool->append(users + sockfd);//-------------pool是线程池，调用append方法向请求队列中插入http_conn类的对象
 
-                    //若有数据传输，则将定时器往后延迟3个单位
-                    //并对新的定时器在链表上的位置进行调整
-                    if (timer)
+                    if (timer)//--------------------------------如果定时器 timer 存在，因为有数据传输，所以
                     {
                         time_t cur = time(NULL);
-                        timer->expire = cur + 3 * TIMESLOT;
+                        timer->expire = cur + 3 * TIMESLOT;//---将其到期时间延后 3 个时间单位，并调整定时器在链表中的位置
                         LOG_INFO("%s", "adjust timer once");
                         Log::get_instance()->flush();
                         timer_lst.adjust_timer(timer);
                     }
                 }
-                else
+                else//------------------------------------------如果读取请求报文失败
                 {
-                    timer->cb_func(&users_timer[sockfd]);
-                    if (timer)
+                    timer->cb_func(&users_timer[sockfd]);//-----调用定时器的回调函数，删除非活动连接在epoll实例上的注册事件
+                    if (timer)//--------------------------------如果定时器存在，则从定时器链表 timer_lst 中删除该定时器
                     {
                         timer_lst.del_timer(timer);
                     }
                 }
             }
+            //当就绪事件数组中的第i个事件的事件类型为可写时
             else if (events[i].events & EPOLLOUT)
             {
-                util_timer *timer = users_timer[sockfd].timer;
-                if (users[sockfd].write())
-                {
+                util_timer *timer = users_timer[sockfd].timer;//在连接资源中获取与当前套接字文件描述符 sockfd 关联的定时器指针
+                if (users[sockfd].write())//--------------------尝试向客户端发送数据，如果发送成功
+                {                                           //--记录日志，表示数据已发送给客户端
                     LOG_INFO("send data to the client(%s)", inet_ntoa(users[sockfd].get_address()->sin_addr));
-                    Log::get_instance()->flush();
+                    Log::get_instance()->flush();//-------------刷新日志缓冲区，将日志写入文件或输出
 
-                    //若有数据传输，则将定时器往后延迟3个单位
-                    //并对新的定时器在链表上的位置进行调整
-                    if (timer)
+                    if (timer)//--------------------------------如果有定时器 timer 关联
                     {
-                        time_t cur = time(NULL);
-                        timer->expire = cur + 3 * TIMESLOT;
-                        LOG_INFO("%s", "adjust timer once");
+                        time_t cur = time(NULL);//--------------获取当前时间 cur
+                        timer->expire = cur + 3 * TIMESLOT;//---更新定时器的过期时间 timer->expire，延迟 3 个时间单位 (TIMESLOT)
+                        LOG_INFO("%s", "adjust timer once");//--记录日志并刷新
                         Log::get_instance()->flush();
-                        timer_lst.adjust_timer(timer);
+                        timer_lst.adjust_timer(timer);//--------调整定时器在定时器列表中的位置。
                     }
                 }
-                else
+                else//------------------------------------------如果发送数据失败
                 {
-                    timer->cb_func(&users_timer[sockfd]);
-                    if (timer)
+                    timer->cb_func(&users_timer[sockfd]);//-----调用定时器的回调函数，删除非活动连接在epoll实例上的注册事件
+                    if (timer)//--------------------------------如果定时器 timer 有效，从定时器列表 timer_lst 中删除该定时器
                     {
                         timer_lst.del_timer(timer);
                     }
                 }
             }
         }
-        if (timeout)
+        if (timeout)//--------如果收到了SIGALARM信号，等待上面的读写事件完成后再进行处理，因为处理定时器为非必须事件，收到信号并不是立即处理
         {
-            timer_handler();
-            timeout = false;
+            timer_handler();//先处理定时器容器中的超时任务，再设置定时，在TIMESLOT秒后发送 SIGALRM 信号给当前进程
+            timeout = false;//重新设置timeout标志为false
         }
     }
     close(epollfd);

@@ -13,6 +13,7 @@
 #include "../lock/lock.h"
 #include "../mysql/sql_connection_pool.h"
 
+/*该类是一个完整的 HTTP 服务器端响应处理器，负责接收 HTTP 请求，解析请求，并根据请求的内容生成和发送 HTTP 响应 */
 class http_conn{
 public:
     /*加static修饰的作用是在类的所有对象之间共享一个变量*/
