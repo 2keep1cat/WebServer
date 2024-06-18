@@ -1,5 +1,5 @@
 #include "http_conn.h"
-//#include "../log/log.h"
+#include "../log/log.h"
 #include <map>
 #include <mysql/mysql.h>
 #include <fstream>
@@ -223,30 +223,21 @@ bool http_conn::write(){
 void http_conn::initmysql_result(connection_pool *connPool){
     //先从连接池中取一个连接
     MYSQL *mysql = NULL;
-    connectionRAII mysqlcon(&mysql, connPool);
-
-    //在user表中检索username，passwd数据，浏览器端输入
+    connectionRAII mysqlcon(&mysql, connPool);//-------新建一个connectionRAII类对象mysqlcon，调用其构造函数
+                                                     //从连接池connPool中取出一个连接放到mysql中
     if (mysql_query(mysql, "SELECT username,passwd FROM user"))
-    {
-        //LOG_ERROR("SELECT error:%s\n", mysql_error(mysql));
-        printf("SELECT error:%s\n", mysql_error(mysql));
+    {                                                //在user表中检索username，passwd，如果查找失败，报错
+        LOG_ERROR("SELECT error:%s\n", mysql_error(mysql));
+        //printf("SELECT error:%s\n", mysql_error(mysql));
     }
-
-    //从表中检索完整的结果集
-    MYSQL_RES *result = mysql_store_result(mysql);
-
-    //返回结果集中的列数
-    int num_fields = mysql_num_fields(result);
-
-    //返回所有字段结构的数组
-    MYSQL_FIELD *fields = mysql_fetch_fields(result);
-
-    //从结果集中获取下一行，将对应的用户名和密码，存入map中
-    while (MYSQL_ROW row = mysql_fetch_row(result))
+    MYSQL_RES *result = mysql_store_result(mysql);//---将查询结果存储在 MYSQL_RES 结构体指针 result 中
+    int num_fields = mysql_num_fields(result);//-------获取结果集中的列数
+    MYSQL_FIELD *fields = mysql_fetch_fields(result);//返回所有字段结构的数组，用于获取字段的详细信息
+    while (MYSQL_ROW row = mysql_fetch_row(result))//--逐行获取结果集中的数据行，将对应的用户名和密码，存入map中
     {
-        string temp1(row[0]);
-        string temp2(row[1]);
-        users[temp1] = temp2;
+        string temp1(row[0]);//------------------------用户名
+        string temp2(row[1]);//------------------------密码
+        users[temp1] = temp2;//------------------------将用户名和密码存入map容器users中
     }
 }
 
