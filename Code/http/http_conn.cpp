@@ -28,6 +28,8 @@ const char *doc_root = "/home/zhuwenjie/WebServer/resource";
 map<string, string> users;//将表中的用户名和密码放入map，#考虑一下用是否可以换成unordered_map
 locker m_lock;//------------插入新用户时用于保护users的锁
 
+int http_conn::m_user_count = 0;
+int http_conn::m_epollfd = -1;
 /*epoll相关的函数*/
 
 /*对文件描述符设置非阻塞*/
@@ -468,9 +470,9 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text){
     }
     else//----------------------------------------其它的请求头部则不管
     {
-        printf("oop!unknow header: %s\n",text);
-        //LOG_INFO("oop!unknow header: %s", text);
-        //Log::get_instance()->flush();
+        //printf("oop!unknow header: %s\n",text);
+        LOG_INFO("oop!unknow header: %s", text);
+        Log::get_instance()->flush();
     }
     return NO_REQUEST;//--------------------------如果未正常到尾部则返回请求不完整，需要继续解析
 }
@@ -675,8 +677,8 @@ bool http_conn::add_response(const char *format, ...){
     }
     m_write_idx += len;//----------------------------------------更新m_write_idx位置
     va_end(arg_list);//------------------------------------------清空可变参列表
-    //LOG_INFO("request:%s", m_write_buf);
-    //Log::get_instance()->flush();
+    LOG_INFO("request:%s", m_write_buf);
+    Log::get_instance()->flush();
     return true;
 }
 

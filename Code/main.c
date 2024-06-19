@@ -1,20 +1,19 @@
+#include <stdio.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <stdio.h>
+#include <sys/epoll.h>
 #include <unistd.h>
+#include <cassert>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
-#include <cassert>
-#include <sys/epoll.h>
-
-#include "./lock/locker.h"
-#include "./threadpool/threadpool.h"
+#include "./lock/lock.h"
+#include "./thread_pool/thread_pool.h"
 #include "./timer/lst_timer.h"
 #include "./http/http_conn.h"
 #include "./log/log.h"
-#include "./CGImysql/sql_connection_pool.h"
+#include "./mysql/sql_connection_pool.h"
 
 #define MAX_FD 65536           //最大文件描述符
 #define MAX_EVENT_NUMBER 10000 //最大事件数
@@ -26,15 +25,25 @@
 //#define listenfdET //边缘触发非阻塞
 #define listenfdLT //水平触发阻塞
 
-//这三个函数在http_conn.cpp中定义，改变链接属性
-extern int addfd(int epollfd, int fd, bool one_shot);
-extern int remove(int epollfd, int fd);
-extern int setnonblocking(int fd);
+//声明这三个函数，这三个函数在http_conn.cpp中定义
+extern int addfd(int epollfd, int fd, bool one_shot);//向内核事件表注册读事件
+extern int removefd(int epollfd, int fd);//------------从内核事件表删除文件描述符
+extern int setnonblocking(int fd);//-------------------对文件描述符设置非阻塞
 
 //设置定时器相关参数
-static int pipefd[2];//用于表示管道
-static sort_timer_lst timer_lst;//创建定时器容器链表
+static int pipefd[2];//--------------------------用于表示管道
+static sort_timer_lst timer_lst;//---------------创建定时器容器链表
 static int epollfd = 0;
+
+/*通过sigaction结构体对信号设置处理方式，即使用handler作为信号处理函数，默认设置SA_RESTART，信号处理函数执行期间屏蔽所有信号*/
+extern void addsig(int sig, void(handler)(int), bool restart);
+
+/*定时处理任务，重新定时以不断触发SIGALRM信号*/
+void timer_handler()
+{
+    timer_lst.tick();//--------------------------先处理定时器容器中的超时任务
+    alarm(TIMESLOT);//---------------------------alarm 用于设置定时，在TIMESLOT秒后发送 SIGALRM 信号给当前进程
+}
 
 /*信号处理函数（传入sigaction结构体使用），仅仅通过管道发送信号值，不处理信号对应的逻辑，缩短异步执行时间，减少对主程序的影响*/
 void sig_handler(int sig)
@@ -45,31 +54,6 @@ void sig_handler(int sig)
     errno = save_errno;//------------------------将原来的errno赋值为当前的errno
 }
 
-/*通过sigaction结构体对信号设置处理方式，即使用handler作为信号处理函数，默认设置SA_RESTART，信号处理函数执行期间屏蔽所有信号*/
-void addsig(int sig, void(handler)(int), bool restart = true)
-{
-    struct sigaction sa;//-----------------------创建sigaction结构体变量
-    memset(&sa, '\0', sizeof(sa));//-------------memset()用于将一块内存区域设置为指定值，&sa指向内存区域的指针，
-                                  //-------------'\0'是要设置的值（字符串终止符），sizeof(sa)是要设置的字节数
-    sa.sa_handler = handler;//-------------------信号处理函数中仅仅发送信号值，不做对应逻辑处理
-    if (restart)
-        sa.sa_flags |= SA_RESTART;//-------------通过restart参数选择是否设置SA_RESTART，即被信号打断的系统调用自动重启
-    sigfillset(&sa.sa_mask);//-------------------将所有信号添加到信号集sa_mask中，sa_mask用来指定在信号处理函数执行期间需要被屏蔽的信号
-                                            /*---assert() 是一个宏定义，用于在程序中进行断言（Assertion）检查，
-                                              ---断言是一种用于检查程序中的假设条件是否成立的工具，
-                                              ---assert() 宏接受一个表达式作为参数，
-                                              ---如果该表达式的值为假，则断言失败并终止程序的执行。
-                                              ---如果表达式的值为真，则断言通过，程序继续执行。*/
-    assert(sigaction(sig, &sa, NULL) != -1);//---执行sigaction函数，对传入的sig信号设置新的处理方式sa，
-                                            //---即handler信号处理函数、SA_RESTART和信号处理函数执行期间屏蔽所有信号
-}
-
-/*定时处理任务，重新定时以不断触发SIGALRM信号*/
-void timer_handler()
-{
-    timer_lst.tick();//--------------------------先处理定时器容器中的超时任务
-    alarm(TIMESLOT);//---------------------------alarm 用于设置定时，在TIMESLOT秒后发送 SIGALRM 信号给当前进程
-}
 
 /*定时器回调函数，删除非活动连接在epoll实例上的注册事件，并关闭*/
 void cb_func(client_data *user_data)
@@ -96,16 +80,10 @@ int main(int argc, char *argv[])
 #endif
 
 #ifdef SYNLOG
-    Log::get_instance()->init("ServerLog", 2000, 800000, 0); //同步日志模型
+    Log::get_instance()->init("ServerLog", 2000, 800000, 0); //同步日志模型，单例模式
 #endif
 
-    if (argc <= 1)
-    {
-        printf("usage: %s ip_address port_number\n", basename(argv[0]));
-        return 1;
-    }
-
-    int port = atoi(argv[1]);//-------------------------将运行程序时输入的端口号转为整型（#可以改为固定端口号以免每次输入）
+    int port = 9527;//atoi(argv[1]);//-------------------------将运行程序时输入的端口号转为整型（##可以改为固定端口号以免每次输入）
 
     addsig(SIGPIPE, SIG_IGN);//-------------------------使用SIG_IGN作为信号处理函数，表示忽略信号SIGPIPE
 

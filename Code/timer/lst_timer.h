@@ -2,8 +2,27 @@
 #define LST_TIMER
 
 #include <time.h>
-//#include "../log/log.h"
+#include <signal.h>
+#include "../log/log.h"
 
+/*通过sigaction结构体对信号设置处理方式，即使用handler作为信号处理函数，默认设置SA_RESTART，信号处理函数执行期间屏蔽所有信号*/
+void addsig(int sig, void(handler)(int), bool restart = true)
+{
+    struct sigaction sa;//-----------------------创建sigaction结构体变量
+    memset(&sa, '\0', sizeof(sa));//-------------memset()用于将一块内存区域设置为指定值，&sa指向内存区域的指针，
+                                  //-------------'\0'是要设置的值（字符串终止符），sizeof(sa)是要设置的字节数
+    sa.sa_handler = handler;//-------------------信号处理函数中仅仅发送信号值，不做对应逻辑处理
+    if (restart)
+        sa.sa_flags |= SA_RESTART;//-------------通过restart参数选择是否设置SA_RESTART，即被信号打断的系统调用自动重启
+    sigfillset(&sa.sa_mask);//-------------------将所有信号添加到信号集sa_mask中，sa_mask用来指定在信号处理函数执行期间需要被屏蔽的信号
+                                            /*---assert() 是一个宏定义，用于在程序中进行断言（Assertion）检查，
+                                              ---断言是一种用于检查程序中的假设条件是否成立的工具，
+                                              ---assert() 宏接受一个表达式作为参数，
+                                              ---如果该表达式的值为假，则断言失败并终止程序的执行。
+                                              ---如果表达式的值为真，则断言通过，程序继续执行。*/
+    assert(sigaction(sig, &sa, NULL) != -1);//---执行sigaction函数，对传入的sig信号设置新的处理方式sa，
+                                            //---即handler信号处理函数、SA_RESTART和信号处理函数执行期间屏蔽所有信号
+}
 
 class util_timer;//------------------前向声明（只能在指针或引用类型成员时使用），连接资源结构体成员需要用到定时器类
 

@@ -4,20 +4,18 @@
 #include <exception>
 #include <semaphore.h>
 #include <pthread.h>
-#include <stdio.h>
+//#include <stdio.h>
 class sem{//信号量
 public:
     //定义两个构造函数用于初始化信号量，一个没有参数（信号量默认为0），一个参数为int num用于指定初始化的信号量的初始值
     sem(){
-        int ret = sem_init(&m_sem,0,0);
-        if(ret==-1){
+        if (sem_init(&m_sem, 0, 0) != 0){
             //perror("init err");//c语言标准库<stdio.h>中的函数
             throw std::exception();
         }
     }
     sem(int num){
-        int ret = sem_init(&m_sem,0,num);
-        if(ret == -1){
+        if (sem_init(&m_sem, 0, num) != 0){
             throw std::exception();
         }
     }
@@ -46,9 +44,7 @@ public:
     }
 //析构函数，销毁互斥锁
     ~locker(){
-        if(pthread_mutex_destroy(&m_mutex)!=0){
-            throw std::exception();
-        }
+        pthread_mutex_destroy(&m_mutex);
     }
 //将pthread_mutex_lock()封装为lock函数，成功返回1，失败返回0
     bool lock(){
@@ -75,18 +71,18 @@ public:
         }
     }
     ~cond(){
-        if(pthread_cond_destroy(&m_cond)!=0){
-            throw std::exception();
-        }
+        pthread_cond_destroy(&m_cond);
     }
 //将pthread_cond_wait函数封装为wait()函数，成功返回1，失败返回0
     bool wait(pthread_mutex_t *mutex){
-        int ret = pthread_cond_wait(&m_cond,mutex);
+		int ret = 0;
+        ret = pthread_cond_wait(&m_cond,mutex);
         return ret == 0;
     }
 //将pthread_cond_timedwait函数封装为timewait()函数，成功返回1，失败返回0
     bool timewait(pthread_mutex_t *mutex, struct timespec t){
-        int ret = pthread_cond_timedwait(&m_cond,mutex,&t);
+        int ret = 0; 
+		ret = pthread_cond_timedwait(&m_cond,mutex,&t);
         return ret == 0;
     }
 //将pthread_cond_signal函数封装为signal()函数，成功返回1，失败返回0

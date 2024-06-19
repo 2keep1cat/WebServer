@@ -1,8 +1,11 @@
 #ifndef THREAD_POOL
 #define THREAD_POOL
 
-#include <iostream>
+#include <list>
+#include <cstdio>
+#include <exception>
 #include <pthread.h>
+#include "../lock/lock.h"
 #include "../mysql/sql_connection_pool.h"
 //线程处理函数和运行函数设置为私有属性
 template<typename T>
